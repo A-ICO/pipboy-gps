@@ -120,6 +120,19 @@ body.in-danger .stat-bar:not(.rad){background:var(--danger);box-shadow:0 0 5px v
   .compass-ring{display:none}
   .log-box{max-height:45px}
 }
+
+.dest-action-btn {
+  flex:1; padding:14px 8px;
+  background:rgba(111,255,78,.08);
+  border:1px solid var(--green);
+  color:var(--green); font-family:var(--font);
+  font-size:14px; letter-spacing:3px;
+  cursor:pointer; transition:all .2s;
+  text-shadow:var(--glow-dim);
+}
+.dest-action-btn:hover,
+.dest-action-btn:active { background:rgba(111,255,78,.22); box-shadow:var(--glow); }
+.dest-action-btn.listening { border-color:#fff; color:#fff; animation:pulse .4s infinite; }
 </style>
 </head>
 <body>
@@ -129,18 +142,38 @@ body.in-danger .stat-bar:not(.rad){background:var(--danger);box-shadow:0 0 5px v
   <div class="dest-heading">MONSTERO INDUSTRIES</div>
   <div class="dest-sub">PIP-BOY 3000 MK IV</div>
   <div class="dest-label">DESTINATION :</div>
+
+  <!-- 
+    CLAVIER : le bouton ECRIRE focus le champ et ouvre le clavier natif
+    MIC     : bouton séparé qui lance la reconnaissance vocale
+    Sur Ray-Ban Meta, le focus programmatique depuis un onclick utilisateur
+    est autorisé par le navigateur (contrairement à un autofocus passif).
+  -->
   <div class="dest-row">
     <input class="dest-input" id="dest-input"
-      type="search" inputmode="search" enterkeyhint="search"
-      autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
-      placeholder="Taper une adresse..."/>
-    <button class="dest-mic" id="mic-btn">&#x1F3A4;</button>
+      type="text"
+      inputmode="text"
+      enterkeyhint="search"
+      autocomplete="off"
+      autocorrect="off"
+      autocapitalize="none"
+      spellcheck="false"
+      placeholder="Votre destination..."/>
   </div>
+
+  <div style="display:flex;gap:10px;width:100%;max-width:440px">
+    <button class="dest-action-btn" id="btn-keyboard" onclick="openKeyboard()">
+      &#x2328; ECRIRE
+    </button>
+    <button class="dest-action-btn" id="btn-mic" onclick="startMic()">
+      &#x1F3A4; DICTER
+    </button>
+  </div>
+
   <div class="dest-status" id="dest-status">&nbsp;</div>
   <div class="dest-results" id="dest-results"></div>
   <span class="dest-skip" onclick="skipDest()">&rarr; passer (mode exploration)</span>
 </div>
-
 <div id="boot">
   <div id="boot-content">
     <div class="boot-logo">&#x2B21;</div>
@@ -239,234 +272,117 @@ function buildSiren(){
 function startSiren(){buildSiren();actx.resume();sGain.gain.setTargetAtTime(.3,actx.currentTime,.6);}
 function stopSiren(){if(sGain)sGain.gain.setTargetAtTime(0,actx.currentTime,.5);}
 
-/* ── MIC ── */
-function initMic(){
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  const btn=$('mic-btn');
-  if(!SR){btn.style.opacity='.3';btn.title='Non supporté';return;}
-  btn.onclick=()=>{
-    if(recog){recog.stop();return;}
-    recog=new SR();recog.lang='fr-FR';recog.interimResults=false;
-    btn.classList.add('on');$('dest-status').textContent='> EN ECOUTE...';
-    recog.start();
-    recog.onresult=e=>{
-      const t=e.results[0][0].transcript;
-      $('dest-input').value=t;
-      $('dest-status').textContent='> "'+t+'"';
-      recog=null;btn.classList.remove('on');
-      doSearch(t);
-    };
-    recog.onerror=recog.onend=()=>{recog=null;btn.classList.remove('on');};
-  };
+/* ── KEYBOARD ── */
+function openKeyboard(){
+  // Focus depuis un événement utilisateur = clavier s'ouvre sur tous les navigateurs
+  const inp = document.getElementById('dest-input');
+  inp.focus();
+  // Scroll into view au cas où
+  inp.scrollIntoView({block:'center'});
+  document.getElementById('dest-status').textContent = '> TAPEZ VOTRE DESTINATION';
 }
 
-/* ── SEARCH ── */
-$('dest-input').addEventListener('input',()=>{
+/* ── MIC ── */
+function startMic(){
+  const btn = document.getElementById('btn-mic');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if(!SR){
+    // Fallback: ouvre le clavier à la place
+    document.getElementById('dest-status').textContent = '> MIC NON SUPPORTE — TAPEZ SVP';
+    openKeyboard();
+    return;
+  }
+
+  if(recog){ recog.stop(); return; }
+
+  // Sur Meta/Android, demander le micro depuis un clic utilisateur
+  recog = new SR();
+  recog.lang = 'fr-FR';
+  recog.interimResults = true;   // affiche les mots en temps réel
+  recog.maxAlternatives = 1;
+  recog.continuous = false;
+
+  btn.classList.add('listening');
+  document.getElementById('dest-status').textContent = '> EN ECOUTE... PARLEZ';
+
+  recog.onresult = e => {
+    const transcript = e.results[0][0].transcript;
+    const isFinal = e.results[0].isFinal;
+    document.getElementById('dest-input').value = transcript;
+    if(isFinal){
+      document.getElementById('dest-status').textContent = '> "' + transcript + '"';
+      btn.classList.remove('listening');
+      recog = null;
+      doSearch(transcript);
+    } else {
+      document.getElementById('dest-status').textContent = '> ' + transcript + '...';
+    }
+  };
+
+  recog.onerror = err => {
+    const msgs = {
+      'not-allowed': '> MICRO REFUSE — AUTORISER DANS LES REGLAGES',
+      'no-speech':   '> RIEN ENTENDU — REESSAYEZ',
+      'network':     '> ERREUR RESEAU MIC',
+      'aborted':     '> MIC ARRETE',
+    };
+    document.getElementById('dest-status').textContent = msgs[err.error] || '> ERREUR MIC: ' + err.error;
+    btn.classList.remove('listening');
+    recog = null;
+  };
+
+  recog.onend = () => {
+    btn.classList.remove('listening');
+    recog = null;
+  };
+
+  try {
+    recog.start();
+  } catch(e) {
+    document.getElementById('dest-status').textContent = '> IMPOSSIBLE DE DEMARRER LE MIC';
+    btn.classList.remove('listening');
+    recog = null;
+  }
+}
+
+/* ── SEARCH (autocomplete live) ── */
+document.getElementById('dest-input').addEventListener('input', () => {
   clearTimeout(sTimer);
-  const v=$('dest-input').value.trim();
-  if(v.length<2){$('dest-results').innerHTML='';$('dest-status').textContent='';return;}
-  sTimer=setTimeout(()=>doSearch(v),600);
+  const v = document.getElementById('dest-input').value.trim();
+  if(v.length < 2){ document.getElementById('dest-results').innerHTML=''; document.getElementById('dest-status').textContent=''; return; }
+  sTimer = setTimeout(() => doSearch(v), 700);
 });
-$('dest-input').addEventListener('keydown',e=>{
-  if(e.key==='Enter'){clearTimeout(sTimer);doSearch($('dest-input').value.trim());}
+document.getElementById('dest-input').addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ clearTimeout(sTimer); doSearch(document.getElementById('dest-input').value.trim()); }
 });
+
 async function doSearch(q){
-  if(!q||q.length<2)return;
-  $('dest-status').textContent='> RECHERCHE...';
-  $('dest-results').innerHTML='';
-  try{
-    const r=await fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(q)+'&format=json&limit=5&accept-language=fr');
-    const data=await r.json();
-    if(!data.length){$('dest-status').textContent='> AUCUN RESULTAT';return;}
-    $('dest-status').textContent='> CHOISIR :';
-    data.forEach(p=>{
-      const parts=p.display_name.split(',');
-      const d=document.createElement('div');d.className='dest-result';
-      d.innerHTML='<div class="res-name">'+parts[0].trim().toUpperCase()+'</div><div class="res-addr">'+parts.slice(1,3).join(',').trim()+'</div>';
-      d.onclick=()=>selectDest(p);
-      $('dest-results').appendChild(d);
+  if(!q || q.length < 2) return;
+  document.getElementById('dest-status').textContent = '> RECHERCHE...';
+  document.getElementById('dest-results').innerHTML = '';
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(q)+'&format=json&limit=5&accept-language=fr');
+    const data = await r.json();
+    if(!data.length){ document.getElementById('dest-status').textContent = '> AUCUN RESULTAT'; return; }
+    document.getElementById('dest-status').textContent = '> ' + data.length + ' RESULTAT(S) :';
+    data.forEach(p => {
+      const parts = p.display_name.split(',');
+      const d = document.createElement('div'); d.className = 'dest-result';
+      d.innerHTML = '<div class="res-name">'+parts[0].trim().toUpperCase()+'</div><div class="res-addr">'+parts.slice(1,3).join(',').trim()+'</div>';
+      d.onclick = () => selectDest(p);
+      document.getElementById('dest-results').appendChild(d);
     });
-  }catch(e){$('dest-status').textContent='> ERREUR RESEAU';}
+  } catch(e) {
+    document.getElementById('dest-status').textContent = '> ERREUR RESEAU';
+  }
 }
 function selectDest(p){
   destination={name:p.display_name.split(',')[0].toUpperCase(),lat:parseFloat(p.lat),lng:parseFloat(p.lon)};
-  $('dest-screen').style.display='none';startBoot();
+  document.getElementById('dest-screen').style.display='none';
+  startBoot();
 }
-function skipDest(){$('dest-screen').style.display='none';startBoot();}
-
-/* ── BOOT ── */
-function startBoot(){
-  const msgs=['MONSTERO OS v7.4.1...','CHARGEMENT CARTOGRAPHIE...','CALIBRATION GPS...','DETECTION BIOMETRIQUE...',
-    destination?'DEST: '+destination.name:'MODE EXPLORATION...','SYSTEME PRET'];
-  const bootEl=$('boot');bootEl.style.display='flex';bootEl.style.opacity='1';
-  let step=0;
-  const iv=setInterval(()=>{
-    if(step>=msgs.length){
-      clearInterval(iv);
-      bootEl.style.transition='opacity .8s';bootEl.style.opacity='0';
-      setTimeout(()=>{
-        bootEl.style.display='none';
-        $('pip-main').style.display='grid';
-        initClock();initStats();initGPS();
-        if(destination){$('dest-hud').style.display='block';$('dest-name-hud').textContent=destination.name;addLog('> DEST: '+destination.name);}
-        setMode('thumb'); // affiche thumb dès le démarrage
-      },800);return;
-    }
-    $('boot-progress').style.width=((step+1)/msgs.length*100)+'%';
-    $('boot-msg').textContent=msgs[step++];
-  },480);
-}
-
-/* ── CLOCK ── */
-function initClock(){
-  const tick=()=>{
-    const n=new Date(),p=v=>String(v).padStart(2,'0');
-    $('clock-time').textContent=p(n.getHours())+':'+p(n.getMinutes());
-    $('clock-date').textContent=p(n.getDate())+'/'+p(n.getMonth()+1)+'/'+n.getFullYear();
-  };tick();setInterval(tick,1000);
-}
-
-/* ── STATS ── */
-function initStats(){
-  setInterval(()=>{
-    if(danger){paB=Math.max(0,paB-.3);radB=Math.min(100,radB+.2);}
-    else if(speed>.5){paB=Math.max(0,paB-.05);}
-    else{paB=Math.min(100,paB+.1);}
-    const pv=Math.max(0,Math.min(100,pvB+(Math.random()-.5)));
-    const pa=Math.max(0,Math.min(100,paB));
-    const rad=Math.max(0,Math.min(100,radB));
-    $('bar-pv').style.width=pv+'%';$('val-pv').textContent=Math.round(pv);
-    $('bar-pa').style.width=pa+'%';$('val-pa').textContent=Math.round(pa);
-    $('bar-rad').style.width=rad+'%';$('val-rad').textContent=Math.round(rad);
-  },500);
-}
-
-/* ── GPS ── */
-function hav(a,b,c,d){
-  const R=6371000,r=x=>x*Math.PI/180,da=r(c-a),db=r(d-b);
-  const q=Math.sin(da/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(db/2)**2;
-  return R*2*Math.atan2(Math.sqrt(q),Math.sqrt(1-q));
-}
-function brg(a,b,c,d){
-  const r=x=>x*Math.PI/180,dl=r(d-b);
-  return((Math.atan2(Math.sin(dl)*Math.cos(r(c)),Math.cos(r(a))*Math.sin(r(c))-Math.sin(r(a))*Math.cos(r(c))*Math.cos(dl))*180/Math.PI)+360)%360;
-}
-function initGPS(){
-  if(!('geolocation' in navigator)){addLog('> GPS NON DISPO');setStatus('HORS LIGNE',false);return;}
-  addLog('> CONNEXION GPS...');setStatus('ACQUISITION',false);
-  navigator.geolocation.watchPosition(onGPS,onErr,{enableHighAccuracy:true,maximumAge:0,timeout:20000});
-}
-function onGPS(pos){
-  const c=pos.coords,now=pos.timestamp,acc=c.accuracy;
-  if(!gpsOk){gpsOk=true;addLog('> GPS OK ✓');addLog('> PREC: ±'+Math.round(acc)+'m');}
-
-  // Vitesse : calculée depuis positions (plus fiable que coords.speed sur mobile)
-  let raw=0;
-  if(lastPos&&lastT){
-    const d=hav(lastPos.lat,lastPos.lng,c.latitude,c.longitude);
-    const dt=(now-lastT)/1000;
-    if(dt>=0.5&&dt<=10) raw=d/dt;
-  }
-  // Utilise coords.speed si dispo et cohérent, sinon computed
-  if(c.speed!=null&&c.speed>=0&&c.speed<30) raw=(raw+c.speed)/2;
-  // Lissage exponentiel : réactif mais pas spastique
-  speed=raw*0.65+prevSpeed*0.35;
-  prevSpeed=speed;
-
-  // Distance totale
-  if(lastPos){const d=hav(lastPos.lat,lastPos.lng,c.latitude,c.longitude);if(d>0.5&&d<150){dist+=d;$('bb-dist').textContent=(dist/1000).toFixed(2)+' km';}}
-  lastPos={lat:c.latitude,lng:c.longitude};lastT=now;
-
-  $('gps-lat').textContent=c.latitude.toFixed(6)+'°';
-  $('gps-lng').textContent=c.longitude.toFixed(6)+'°';
-  $('gps-alt').textContent=c.altitude!=null?Math.round(c.altitude)+' m':'N/A';
-  $('gps-acc').textContent='±'+Math.round(acc)+' m';
-  $('gps-speed').textContent=speed.toFixed(2)+' m/s';
-  setSig(acc);
-  const h=c.heading;
-  if(h!=null&&!isNaN(h)&&h>=0){$('gps-heading').textContent=Math.round(h)+'°';$('compass-needle').style.transform='rotate('+h+'deg)';}
-
-  // Destination
-  if(destination&&!destReached){
-    const dtd=hav(c.latitude,c.longitude,destination.lat,destination.lng);
-    if(dtd<50){destReached=true;addLog('> DESTINATION ATTEINTE !');showWin();return;}
-    const dirs=['↑','↗','→','↘','↓','↙','←','↖'];
-    $('quest-name').textContent=destination.name;
-    $('quest-dist').textContent=dtd>1000?(dtd/1000).toFixed(2)+' km':Math.round(dtd)+' m';
-    $('quest-arrow').textContent=dirs[Math.round(brg(c.latitude,c.longitude,destination.lat,destination.lng)/45)%8];
-  }
-
-  if(danger||destReached)return;
-
-  // Mascot : WALK si vitesse > 0.5 m/s, THUMB sinon (avec délai 2.5s)
-  if(speed>0.5){
-    clearTimeout(stillTimer);stillTimer=null;
-    setMode('walk');
-    setStatus('EN MARCHE',false);$('bb-status').textContent='ACTIF';
-    if(!destination){$('quest-name').textContent='DEPLACEMENT';$('quest-dist').textContent=speed.toFixed(1)+' m/s';$('quest-arrow').textContent='▲';}
-  } else if(!stillTimer){
-    stillTimer=setTimeout(()=>{
-      stillTimer=null;
-      if(!danger&&speed<=0.5){
-        setMode('thumb');
-        setStatus('EN VEILLE',false);$('bb-status').textContent='VEILLE';
-        if(!destination){$('quest-name').textContent='POSITION FIXE';$('quest-dist').textContent='OK';$('quest-arrow').textContent='●';}
-      }
-    },2500);
-  }
-}
-function onErr(e){const m={1:'GPS REFUSE',2:'SIGNAL PERDU',3:'TIMEOUT'}[e.code]||'ERREUR';addLog('> ! '+m);setStatus('HORS LIGNE',false);setSig(9999);}
-
-/* ── MASCOT ── */
-let curMode='';
-function setMode(m){
-  if(curMode===m)return;curMode=m;
-  mascot.src='';requestAnimationFrame(()=>{mascot.src=GIFS[m];});
-}
-
-/* ── DANGER ── */
-function toggleDanger(on){
-  danger=on;
-  if(on){
-    clearTimeout(stillTimer);stillTimer=null;
-    document.body.classList.add('in-danger');
-    $('danger-alert').classList.add('show');
-    $('status-dot').classList.add('danger');
-    $('btn-on').classList.add('adanger');$('btn-off').classList.remove('adanger');
-    setMode('danger');setStatus('DANGER',true);$('bb-status').textContent='DANGER';
-    $('quest-name').textContent='! ZONE HOSTILE';$('quest-dist').textContent='FUYEZ';$('quest-arrow').textContent='!';
-    startSiren();addLog('> ! ALERTE DANGER');
-  } else {
-    document.body.classList.remove('in-danger');
-    $('danger-alert').classList.remove('show');
-    $('status-dot').classList.remove('danger');
-    $('btn-off').classList.add('adanger');$('btn-on').classList.remove('adanger');
-    stopSiren();radB=Math.max(12,radB-20);addLog('> ZONE SECURISEE');
-    // Reprend état correct immédiatement
-    if(speed>0.5){setMode('walk');setStatus('EN MARCHE',false);$('bb-status').textContent='ACTIF';}
-    else{setMode('thumb');setStatus('EN VEILLE',false);$('bb-status').textContent='VEILLE';}
-  }
-}
-
-/* ── WIN ── */
-function showWin(){
-  stopSiren();
-  winMascot.src='';requestAnimationFrame(()=>{winMascot.src=GIFS.thumb;});
-  $('win-screen').classList.add('show');
-  addLog('> GOOD GAME !');
-}
-function closeApp(){
-  window.close();
-  $('win-screen').innerHTML='<div style="color:var(--green);text-align:center;padding:40px;font-size:16px;letter-spacing:4px">FERMEZ CETTE PAGE<br><br><span style="font-size:11px;color:var(--green-dim)">MONSTERO INDUSTRIES</span></div>';
-}
-
-/* ── UTILS ── */
-function setStatus(t,d){$('status-text').textContent=t;$('status-dot').classList.toggle('danger',d);}
-function setSig(a){let b=a<5?4:a<15?3:a<30?2:a<60?1:0;sigBars.forEach((el,i)=>el.classList.toggle('active',i<b));}
-function addLog(msg){const el=document.createElement('div');el.className='log-entry new';el.textContent=msg;const lb=$('log-box');lb.appendChild(el);lb.scrollTop=lb.scrollHeight;setTimeout(()=>el.classList.remove('new'),3000);}
-document.addEventListener('keydown',e=>{if(e.key==='d'||e.key==='D')toggleDanger(!danger);});
-
-initMic();
+function skipDest(){ document.getElementById('dest-screen').style.display='none'; startBoot(); }
 </script>
 </body>
 </html>
